@@ -199,7 +199,7 @@ fun CanvasWorkspace(
                             requireUnconsumed = false,
                             pass = PointerEventPass.Initial,
                         )
-                        var maxTouchCount = if (firstDown.type == PointerType.Stylus) 0 else 1
+                        var maxTouchCount = if (isStylusInput(firstDown.type)) 0 else 1
                         var multiTouchStartedAt = 0L
                         var lastEventTime = firstDown.uptimeMillis
                         var transformStarted = false
@@ -207,7 +207,7 @@ fun CanvasWorkspace(
                         var accumulatedZoom = 1f
                         var accumulatedRotation = 0f
                         var touchTravel = 0f
-                        var stylusSeen = firstDown.type == PointerType.Stylus
+                        var stylusSeen = isStylusInput(firstDown.type)
                         var threeFingerStart: Offset? = null
                         var threeFingerEnd: Offset? = null
                         var threeFingerLastX: Float? = null
@@ -222,13 +222,13 @@ fun CanvasWorkspace(
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             lastEventTime = event.changes.maxOfOrNull { it.uptimeMillis } ?: lastEventTime
-                            stylusSeen = stylusSeen || event.changes.any { it.pressed && it.type == PointerType.Stylus }
+                            stylusSeen = stylusSeen || event.changes.any { it.pressed && isStylusInput(it.type) }
 
-                            val touches = event.changes.filter { it.pressed && it.type != PointerType.Stylus }
+                            val touches = event.changes.filter { it.pressed && !isStylusInput(it.type) }
                             maxTouchCount = maxOf(maxTouchCount, touches.size)
                             if (touches.size >= 2 && multiTouchStartedAt == 0L) multiTouchStartedAt = lastEventTime
 
-                            event.changes.filter { it.type != PointerType.Stylus && (it.pressed || it.previousPressed) }
+                            event.changes.filter { !isStylusInput(it.type) && (it.pressed || it.previousPressed) }
                                 .forEach { touchTravel += (it.position - it.previousPosition).getDistance() }
 
                             val rapidFingers = if (shouldArmRapidHistoryGesture(
@@ -310,11 +310,11 @@ fun CanvasWorkspace(
                             } else if (multiTouchStartedAt != 0L) {
                                 // Keep the remaining finger from becoming a new stroke while a multi-touch
                                 // gesture is winding down.
-                                event.changes.filter { it.type != PointerType.Stylus && (it.pressed || it.previousPressed) }
+                                event.changes.filter { !isStylusInput(it.type) && (it.pressed || it.previousPressed) }
                                     .forEach { it.consume() }
                             }
 
-                            val anyTouchPressed = event.changes.any { it.pressed && it.type != PointerType.Stylus }
+                            val anyTouchPressed = event.changes.any { it.pressed && !isStylusInput(it.type) }
                             if (!anyTouchPressed && multiTouchStartedAt != 0L) {
                                 val duration = (lastEventTime - multiTouchStartedAt).coerceAtLeast(0L)
                                 val tapTravelLimit = viewConfiguration.touchSlop * maxOf(2, maxTouchCount) * 1.5f
@@ -398,7 +398,7 @@ fun CanvasWorkspace(
                         return@awaitEachGesture
                     }
                     if (shouldArmQuickMenu(
-                            isStylus = down.type == PointerType.Stylus,
+                            isStylus = isStylusInput(down.type),
                             fingerPaintingEnabled = state.fingerPaintingEnabled,
                             tool = state.tool,
                             objectArrangePicking = state.objectArrangePicking,
@@ -411,7 +411,7 @@ fun CanvasWorkspace(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                val pressedTouches = event.changes.count { it.pressed && it.type != PointerType.Stylus }
+                                val pressedTouches = event.changes.count { it.pressed && !isStylusInput(it.type) }
                                 if (pressedTouches > 1 ||
                                     (change.position - down.position).getDistance() > viewConfiguration.touchSlop
                                 ) {
@@ -428,7 +428,7 @@ fun CanvasWorkspace(
                         return@awaitEachGesture
                     }
                     if (
-                        down.type != PointerType.Stylus &&
+                        !isStylusInput(down.type) &&
                         !state.fingerPaintingEnabled &&
                         state.tool in listOf(Tool.Brush, Tool.Eraser, Tool.Smudge, Tool.Liquify)
                     ) {
@@ -457,7 +457,7 @@ fun CanvasWorkspace(
                             normalizedPressure(pressure),
                         )
                     }
-                    val initial = point(down.position, if (down.type == PointerType.Stylus) down.pressure else 1f)
+                    val initial = point(down.position, if (isStylusInput(down.type)) down.pressure else 1f)
                     if (state.tool != Tool.Pan && (initial.x < 0f || initial.y < 0f ||
                         initial.x >= document.width || initial.y >= document.height)) return@awaitEachGesture
 
@@ -627,7 +627,7 @@ fun CanvasWorkspace(
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id }
-                            val pressedTouches = event.changes.count { it.pressed && it.type != PointerType.Stylus }
+                            val pressedTouches = event.changes.count { it.pressed && !isStylusInput(it.type) }
                             if (change == null || change.isConsumed || pressedTouches > 1) {
                                 cancelled = true
                                 break
@@ -741,7 +741,7 @@ fun CanvasWorkspace(
                             } else if (state.tool == Tool.MoveSelection) {
                                 if (movingSelection) moveDelta += amount / gestureScale
                             } else if (change.position != previous) {
-                                val pressure = if (change.type == PointerType.Stylus && change.pressed) change.pressure
+                                val pressure = if (isStylusInput(change.type) && change.pressed) change.pressure
                                     else (quickShapeRawPoints.lastOrNull()?.pressure ?: inProgress.last().pressure)
                                 val drawnPoint = point(change.position, pressure)
                                 if (quickShapePointerDown && state.tool == Tool.Brush) {
@@ -2094,7 +2094,11 @@ internal fun shouldArmQuickMenu(
     !isStylus &&
         !fingerPaintingEnabled &&
         !objectArrangePicking &&
-        tool in setOf(Tool.Brush, Tool.Eraser, Tool.Smudge, Tool.Liquify)
+    tool in setOf(Tool.Brush, Tool.Eraser, Tool.Smudge, Tool.Liquify)
+
+/** Treat a stylus eraser end as pen input so it cannot arm touch-only gestures. */
+internal fun isStylusInput(type: PointerType): Boolean =
+    type == PointerType.Stylus || type == PointerType.Eraser
 
 @Composable
 private fun QuickMenuOverlay(

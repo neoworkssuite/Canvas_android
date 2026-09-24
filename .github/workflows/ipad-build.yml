@@ -1,0 +1,576 @@
+name: NeoCanvas CI
+
+on:
+  push:
+    branches:
+      - main
+      - ipad-gestures-phase1
+  workflow_dispatch:
+    inputs:
+      capture_manual_screenshots:
+        description: Capture and upload the NeoCanvas website/manual screenshot pack
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  fast-validation:
+    name: Fast validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: neocanvas-fast-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout NeoCanvas
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Prepare Gradle wrapper
+        run: chmod +x ./gradlew
+
+      - name: Verify Gradle project
+        run: ./gradlew projects
+
+      - name: Verify release contract
+        run: python3 scripts/verify-release-contract.py
+
+      - name: Run NeoCanvas shared tests
+        run: |
+          ./gradlew \
+            :core:desktopTest \
+            :brushes:desktopTest \
+            :renderer:desktopTest \
+            :ui:desktopTest
+
+      - name: Upload Neo Nature Studio brush pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neo-Nature-Studio-Brush-Pack
+          path: brushes/build/brush-packs/Neo-Nature-Studio.neobrushpack
+          if-no-files-found: error
+          retention-days: 30
+
+  ipad-build:
+    name: Full iPad validation
+    needs: fast-validation
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      contains(github.event.head_commit.message, '[ipad]') ||
+      contains(github.event.head_commit.message, '[full-ci]')
+    runs-on: macos-26
+    timeout-minutes: 45
+    concurrency:
+      group: neocanvas-ipad-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout NeoCanvas
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Show Apple toolchain
+        run: |
+          echo "=== macOS ==="
+          sw_vers
+
+          echo
+          echo "=== Architecture ==="
+          uname -m
+
+          echo
+          echo "=== Xcode ==="
+          xcodebuild -version
+
+          echo
+          echo "=== Java ==="
+          java -version
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Prepare executable scripts
+        run: |
+          chmod +x ./gradlew
+          chmod +x ./scripts/prepare-ios.sh
+
+      - name: Verify Gradle project
+        run: |
+          ./gradlew projects
+
+      - name: Verify release contract
+        run: python3 scripts/verify-release-contract.py
+
+      - name: Run NeoCanvas shared tests
+        run: |
+          ./gradlew \
+            :core:desktopTest \
+            :brushes:desktopTest \
+            :renderer:desktopTest \
+            :ui:desktopTest
+
+      - name: Generate Xcode project
+        run: |
+          ./scripts/prepare-ios.sh
+
+      - name: Show generated Xcode project
+        run: |
+          cd iosApp
+
+          xcodebuild \
+            -project NeoCanvas.xcodeproj \
+            -list
+
+      # ========================================================
+      # APPLE SILICON IPAD SIMULATOR
+      # ========================================================
+
+      - name: Build NeoCanvas for iPad Simulator
+        run: |
+          cd iosApp
+
+          xcodebuild \
+            -project NeoCanvas.xcodeproj \
+            -scheme NeoCanvas \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: Verify iPad Simulator app
+        run: |
+          APP="iosApp/build/DerivedData/Build/Products/Debug-iphonesimulator/NeoCanvas.app"
+
+          test -d "$APP"
+
+          echo "Simulator app:"
+          du -sh "$APP"
+
+          echo
+          echo "Executable:"
+          file "$APP/NeoCanvas"
+
+          echo
+          echo "Info.plist:"
+          plutil -p "$APP/Info.plist" | head -80
+
+          echo
+          echo "Release resources:"
+          test -f "$APP/PrivacyInfo.xcprivacy"
+          test -f "$APP/Assets.car"
+          plutil -lint "$APP/PrivacyInfo.xcprivacy"
+
+          EXPECTED_MARKETING_VERSION="$(awk -F= '/^MARKETING_VERSION/{gsub(/[[:space:]]/, "", $2); print $2}' iosApp/Configuration/Config.xcconfig)"
+          EXPECTED_BUILD_VERSION="$(awk -F= '/^CURRENT_PROJECT_VERSION/{gsub(/[[:space:]]/, "", $2); print $2}' iosApp/Configuration/Config.xcconfig)"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Info.plist")" = "$EXPECTED_MARKETING_VERSION"
+          test "$(plutil -extract CFBundleVersion raw -o - "$APP/Info.plist")" = "$EXPECTED_BUILD_VERSION"
+
+      - name: Upload iPad simulator build
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCanvas-iPad-Simulator
+          path: iosApp/build/DerivedData/Build/Products/Debug-iphonesimulator/NeoCanvas.app
+          if-no-files-found: error
+          retention-days: 14
+
+      # ========================================================
+      # REAL IPAD / IOS ARM64
+      # ========================================================
+
+      - name: Build NeoCanvasKit for physical iPad
+        run: |
+          ./gradlew :ui:linkReleaseFrameworkIosArm64
+
+          FRAMEWORK="ui/build/bin/iosArm64/releaseFramework/NeoCanvasKit.framework"
+
+          test -d "$FRAMEWORK"
+
+          echo "Real-device Kotlin framework:"
+          du -sh "$FRAMEWORK"
+
+          echo
+          file "$FRAMEWORK/NeoCanvasKit"
+
+      - name: Build unsigned NeoCanvas for physical iPad
+        run: |
+          cd iosApp
+
+          xcodebuild \
+            -project NeoCanvas.xcodeproj \
+            -scheme NeoCanvas \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$PWD/build/DeviceDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: Verify physical iPad app
+        run: |
+          APP="iosApp/build/DeviceDerivedData/Build/Products/Release-iphoneos/NeoCanvas.app"
+
+          test -d "$APP"
+
+          echo "Physical iPad app:"
+          du -sh "$APP"
+
+          echo
+          echo "Executable architecture:"
+          file "$APP/NeoCanvas"
+
+          echo
+          echo "Info.plist:"
+          plutil -p "$APP/Info.plist" | head -100
+
+          echo
+          echo "Embedded frameworks:"
+          find "$APP" -maxdepth 3 -type d -name "*.framework" -print
+
+          echo
+          echo "Privacy manifest and compiled assets:"
+          test -f "$APP/PrivacyInfo.xcprivacy"
+          test -f "$APP/Assets.car"
+          plutil -lint "$APP/PrivacyInfo.xcprivacy"
+          plutil -p "$APP/Info.plist" | grep -q 'ITSAppUsesNonExemptEncryption.*false'
+
+          EXPECTED_MARKETING_VERSION="$(awk -F= '/^MARKETING_VERSION/{gsub(/[[:space:]]/, "", $2); print $2}' iosApp/Configuration/Config.xcconfig)"
+          EXPECTED_BUILD_VERSION="$(awk -F= '/^CURRENT_PROJECT_VERSION/{gsub(/[[:space:]]/, "", $2); print $2}' iosApp/Configuration/Config.xcconfig)"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Info.plist")" = "$EXPECTED_MARKETING_VERSION"
+          test "$(plutil -extract CFBundleVersion raw -o - "$APP/Info.plist")" = "$EXPECTED_BUILD_VERSION"
+
+      - name: Upload unsigned physical iPad build
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCanvas-iPad-Device-Unsigned
+          path: iosApp/build/DeviceDerivedData/Build/Products/Release-iphoneos/NeoCanvas.app
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Pick and boot iPad Simulator
+        id: ipad
+        shell: bash
+        run: |
+          xcrun simctl shutdown all 2>/dev/null || true
+
+          UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; devices=[d for group in data.values() for d in group if d.get("isAvailable") and "iPad" in d.get("name","")]; print(devices[0]["udid"] if devices else "")')"
+
+          if [ -z "$UDID" ]; then
+            echo "No available iPad Simulator found."
+            xcrun simctl list devices available
+            exit 1
+          fi
+
+          NAME="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; wanted=sys.argv[1]; data=json.load(sys.stdin)["devices"]; print(next((d.get("name","Unknown iPad") for group in data.values() for d in group if d.get("udid")==wanted), "Unknown iPad"))' "$UDID")"
+
+          echo "Selected simulator: $NAME"
+          echo "UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Smoke test NeoCanvas on iPad Simulator
+        shell: bash
+        env:
+          UDID: ${{ steps.ipad.outputs.udid }}
+        run: |
+          APP="iosApp/build/DerivedData/Build/Products/Debug-iphonesimulator/NeoCanvas.app"
+          BUNDLE_ID="com.neoworksuite.neocanvas"
+
+          mkdir -p artifacts/simulator
+
+          if [ ! -d "$APP" ]; then
+            echo "NeoCanvas.app not found: $APP"
+            exit 1
+          fi
+
+          echo "Installing:"
+          echo "$APP"
+
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+          xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+
+          xcrun simctl install "$UDID" "$APP"
+
+          echo "=== FIRST LAUNCH ==="
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" \
+            | tee artifacts/simulator/first-launch.txt
+
+          echo "Allowing NeoCanvas to initialise..."
+          sleep 8
+
+          echo "=== LIVENESS CHECK ==="
+
+          if ! xcrun simctl terminate "$UDID" "$BUNDLE_ID"; then
+            echo "NeoCanvas was no longer running after startup."
+            exit 1
+          fi
+
+          echo "NeoCanvas remained running after startup."
+
+          echo "=== SECOND LAUNCH FOR SCREENSHOT ==="
+
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" \
+            | tee artifacts/simulator/second-launch.txt
+
+          sleep 3
+
+          xcrun simctl io "$UDID" screenshot \
+            artifacts/simulator/neocanvas-ipad.png
+
+          echo "=== APP INFO ==="
+
+          plutil -p "$APP/Info.plist" \
+            > artifacts/simulator/Info.plist.txt
+
+          file "$APP/NeoCanvas" \
+            > artifacts/simulator/executable.txt
+
+          echo "=== SIMULATOR APP LOG ==="
+
+          xcrun simctl spawn "$UDID" log show \
+            --last 3m \
+            --style compact \
+            --predicate 'process == "NeoCanvas"' \
+            > artifacts/simulator/neocanvas.log 2>&1 || true
+
+          echo "=== SCREENSHOT ==="
+          ls -lh artifacts/simulator/neocanvas-ipad.png
+
+      - name: Extended visual simulator validation
+        shell: bash
+        env:
+          UDID: ${{ steps.ipad.outputs.udid }}
+        run: |
+          APP="iosApp/build/DerivedData/Build/Products/Debug-iphonesimulator/NeoCanvas.app"
+          BUNDLE_ID="com.neoworksuite.neocanvas"
+
+          mkdir -p artifacts/simulator
+
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 2>/dev/null || true
+
+          echo "=== LIGHT MODE ==="
+          xcrun simctl ui "$UDID" appearance light
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" | tee artifacts/simulator/light-launch.txt
+          sleep 4
+          xcrun simctl io "$UDID" screenshot artifacts/simulator/neocanvas-light.png
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID"
+
+          echo "=== DARK MODE ==="
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" | tee artifacts/simulator/dark-launch.txt
+          sleep 4
+          xcrun simctl io "$UDID" screenshot artifacts/simulator/neocanvas-dark.png
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID"
+
+          echo "=== COLD RELAUNCH STABILITY ==="
+          xcrun simctl ui "$UDID" appearance light
+
+          for ATTEMPT in 1 2 3; do
+            echo "Relaunch attempt $ATTEMPT"
+            xcrun simctl launch "$UDID" "$BUNDLE_ID" | tee "artifacts/simulator/relaunch-$ATTEMPT.txt"
+            sleep 4
+            xcrun simctl io "$UDID" screenshot "artifacts/simulator/neocanvas-relaunch-$ATTEMPT.png"
+
+            if ! xcrun simctl terminate "$UDID" "$BUNDLE_ID"; then
+              echo "NeoCanvas did not remain alive on relaunch attempt $ATTEMPT."
+              exit 1
+            fi
+          done
+
+          echo "=== BUILT PLIST CONTRACT ==="
+          plutil -p "$APP/Info.plist" | tee artifacts/simulator/Info.plist-verified.txt
+
+          plutil -p "$APP/Info.plist" | grep -q 'CADisableMinimumFrameDurationOnPhone.*true'
+          plutil -p "$APP/Info.plist" | grep -q 'UIInterfaceOrientationPortrait'
+          plutil -p "$APP/Info.plist" | grep -q 'UIInterfaceOrientationLandscapeLeft'
+          plutil -p "$APP/Info.plist" | grep -q 'UIInterfaceOrientationLandscapeRight'
+
+          echo "=== SCREENSHOT DIMENSIONS ==="
+          for IMAGE in artifacts/simulator/neocanvas-ipad.png artifacts/simulator/neocanvas-light.png artifacts/simulator/neocanvas-dark.png artifacts/simulator/neocanvas-relaunch-*.png; do
+            test -s "$IMAGE"
+            echo "$IMAGE" | tee -a artifacts/simulator/screenshot-dimensions.txt
+            sips -g pixelWidth -g pixelHeight "$IMAGE" | tee -a artifacts/simulator/screenshot-dimensions.txt
+          done
+
+          echo "=== FINAL CLEAN LAUNCH ==="
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" | tee artifacts/simulator/final-launch.txt
+          sleep 4
+
+          if ! xcrun simctl terminate "$UDID" "$BUNDLE_ID"; then
+            echo "NeoCanvas failed final liveness check."
+            exit 1
+          fi
+
+          echo "NeoCanvas passed light mode, dark mode, three cold relaunches, plist checks, screenshot checks, and final liveness."
+
+          xcrun simctl spawn "$UDID" log show \
+            --last 8m \
+            --style compact \
+            --predicate 'process == "NeoCanvas"' \
+            > artifacts/simulator/neocanvas-extended.log 2>&1 || true
+
+      - name: Upload iPad smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCanvas-iPad-Smoke-Test
+          path: artifacts/simulator/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Shut down iPad Simulator
+        if: always()
+        shell: bash
+        env:
+          UDID: ${{ steps.ipad.outputs.udid }}
+        run: |
+          if [ -n "$UDID" ]; then
+            xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          fi
+
+  manual-screenshot-pack:
+    name: Manual screenshot pack
+    needs: fast-validation
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_manual_screenshots
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout NeoCanvas
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Prepare iPad project
+        run: |
+          chmod +x ./gradlew
+          chmod +x ./scripts/prepare-ios.sh
+          ./scripts/prepare-ios.sh
+
+      - name: Pick a clean iPad Simulator
+        id: manual_ipad
+        shell: bash
+        run: |
+          xcrun simctl shutdown all 2>/dev/null || true
+
+          UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; devices=[d for group in data.values() for d in group if d.get("isAvailable") and "iPad" in d.get("name","")]; print(devices[0]["udid"] if devices else "")')"
+          if [ -z "$UDID" ]; then
+            echo "No available iPad Simulator found."
+            xcrun simctl list devices available
+            exit 1
+          fi
+
+          NAME="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; wanted=sys.argv[1]; data=json.load(sys.stdin)["devices"]; print(next((d.get("name","Unknown iPad") for group in data.values() for d in group if d.get("udid")==wanted), "Unknown iPad"))' "$UDID")"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Capturing on $NAME ($UDID)"
+
+          xcrun simctl erase "$UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 2>/dev/null || true
+
+      - name: Capture real NeoCanvas screens
+        shell: bash
+        env:
+          UDID: ${{ steps.manual_ipad.outputs.udid }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cd iosApp
+
+          xcodebuild \
+            -project NeoCanvas.xcodeproj \
+            -scheme NeoCanvas \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath "$PWD/build/ManualScreenshotDerivedData" \
+            -resultBundlePath "$GITHUB_WORKSPACE/artifacts/NeoCanvas-Manual-Screenshots.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test \
+            -only-testing:NeoCanvasUITests/NeoCanvasManualScreenshotTests/testCaptureManualScreenshotPack
+
+      - name: Verify and index screenshot pack
+        env:
+          SCREENSHOT_OUTPUT_DIR: ${{ github.workspace }}/artifacts/manual-screenshots
+          ATTACHMENT_OUTPUT_DIR: ${{ github.workspace }}/artifacts/manual-screenshot-attachments
+          DEVICE_NAME: ${{ steps.manual_ipad.outputs.name }}
+        run: |
+          mkdir -p "$ATTACHMENT_OUTPUT_DIR"
+          xcrun xcresulttool export attachments \
+            --path artifacts/NeoCanvas-Manual-Screenshots.xcresult \
+            --output-path "$ATTACHMENT_OUTPUT_DIR"
+
+          python3 scripts/package-manual-screenshots.py \
+            --directory "$SCREENSHOT_OUTPUT_DIR" \
+            --attachments-directory "$ATTACHMENT_OUTPUT_DIR" \
+            --commit "$GITHUB_SHA" \
+            --device "$DEVICE_NAME"
+
+          find "$SCREENSHOT_OUTPUT_DIR" -maxdepth 1 -type f -print | sort
+
+      - name: Upload NeoCanvas manual screenshot pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCanvas-Manual-Screenshot-Pack-${{ github.sha }}
+          path: artifacts/manual-screenshots/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload screenshot test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoCanvas-Manual-Screenshot-Diagnostics-${{ github.sha }}
+          path: |
+            artifacts/NeoCanvas-Manual-Screenshots.xcresult
+            artifacts/manual-screenshots/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Shut down screenshot Simulator
+        if: always()
+        shell: bash
+        env:
+          UDID: ${{ steps.manual_ipad.outputs.udid }}
+        run: |
+          if [ -n "$UDID" ]; then
+            xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          fi

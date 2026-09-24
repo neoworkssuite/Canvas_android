@@ -23,5 +23,5 @@ jobs:
       - name: Verify Android repository boundary
         shell: pwsh
         run: ./scripts/verify-android-repository.ps1
-      - name: Run Android unit tests and assemble debug APK
-        run: ./gradlew :androidApp:testDebugUnitTest :androidApp:assembleDebug
+      - name: Run Android unit tests, lint, and assemble debug APK
+        run: ./gradlew :androidApp:testDebugUnitTest :androidApp:lintDebug :androidApp:assembleDebug

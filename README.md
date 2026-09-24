@@ -1,41 +1,29 @@
-# NeoCanvas
+# NeoCanvas for Android tablets
 
-NeoCanvas is an offline-first drawing and creative studio for iPad, Android and Windows.
-
-The project is a Kotlin and Compose Multiplatform application. It has no account,
-network, telemetry, or cloud-storage requirement; documents are designed to remain
-local unless a person explicitly exports or copies them.
+NeoCanvas is an offline-first drawing and creative studio for Android tablets. It keeps artwork on the device unless the artist explicitly imports, exports, or shares a file; it has no account, network service, telemetry, or cloud-storage dependency.
 
 ## Modules
 
 - `core` — document model, commands, history, and persistence contracts
-- `brushes` — brush definitions and stroke sampling
-- `renderer` — tiles, compositing, and export
-- `ui` — shared Compose editor workspace
-- `androidApp` — Android host
-- `windowsApp` — Windows desktop host
-- `iosApp` — native iPad/iPhone host for the shared NeoCanvas editor
+- `brushes` — brush definitions, stroke sampling, and bundled brush packs
+- `renderer` — tile raster engine, compositing, effects, and encoders
+- `ui` — shared Compose editor workspace and tablet gestures
+- `androidApp` — Android activity, input, local files, and resources
 
 ## Prerequisites
 
-- JDK 17 or newer
-- Android SDK with API 36 installed (for the Android host)
-- Gradle 8.13 or the project Gradle wrapper
-- macOS + Xcode + XcodeGen for the Apple host
+- JDK 17
+- Android SDK with API 36
+- Android Studio or the Android command-line tooling
 
-## Verify the shell
+## Verify
 
 ```powershell
-./gradlew :androidApp:testDebugUnitTest
-./gradlew :windowsApp:run
+./gradlew.bat :androidApp:testDebugUnitTest :androidApp:assembleDebug
 ```
 
-The Android test task should complete successfully. The Windows task opens a window
-titled `NeoCanvas`; close the window to end the task.
+The debug APK is written to `androidApp/build/outputs/apk/debug/`.
 
+## Current product direction
 
-## Apple release validation
-
-The `NeoCanvas CI` workflow uses fast shared tests for ordinary commits and a deliberate full Apple lane for `[ipad]` / `[full-ci]` checkpoints. The full lane builds both simulator and ARM64 device apps, performs simulator launch/visual stability checks, and verifies release resources such as the AppIcon asset catalog and privacy manifest.
-
-NeoCanvas does not require an account, network connection, telemetry service or cloud-storage provider for its core workflow.
+This repository starts from NeoCanvas's iPad-parity shared editor. Android-specific work now focuses on physical-tablet stylus and gesture validation, Storage Access Framework and sharing integration, tablet windowing, performance, recovery, and accessibility.

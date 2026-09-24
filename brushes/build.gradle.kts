@@ -11,15 +11,6 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_17)
         }
     }
-    jvm("desktop") {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
-        }
-    }
-
-    iosArm64()
-    iosSimulatorArm64()
-
     sourceSets {
         commonMain.dependencies {
             implementation(project(":core"))

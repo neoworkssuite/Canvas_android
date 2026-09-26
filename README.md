@@ -1,5 +1,9 @@
 # NeoCanvas for Android tablets
 
+> **Historical source repository:** This repository remains available to preserve
+> NeoCanvas history. Active cross-platform development now lives in
+> [neoworkssuite/NeoCanvas](https://github.com/neoworkssuite/NeoCanvas).
+
 NeoCanvas is an offline-first drawing and creative studio for Android tablets. It keeps artwork on the device unless the artist explicitly imports, exports, or shares a file; it has no account, network service, telemetry, or cloud-storage dependency.
 
 ## Modules
